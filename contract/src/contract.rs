@@ -22,27 +22,72 @@ use near_sdk::{
 pub struct Contract {
     // 合约账号
     owner_id: AccountId,
+    // 自增 token id
+    token_id: u64,
     // 存储所有的卡牌
     tokens: NonFungibleToken,
-    // 使用全局自增 id 作为 NFT id
-    unique_id: u64,
-    // 存储卡片id
+    // 自增卡片id
     card_id: u64,
-    // 存储
+    // 存储所有的卡片
     cards: LookupMap<u64, Card>,
+    // 自增对局id
+    game_id: u64,
+    // 存储所有关联的游戏状态
+    games: LookupMap<u64, Game>,
+}
+
+#[derive(BorshDeserialize, BorshSerialize)]
+pub struct Deck {
+    // 当前卡牌库中交互玩家数
+    pub num_of_players: usize,
+    // 当前卡牌库
+    pub cards: Vec<Card>,
+}
+
+#[derive(BorshDeserialize, BorshSerialize)]
+pub struct Player {
+    // 玩家id
+    name:AccountId,
+    //玩家手牌
+    hand: Vec<Card>,
+    // 玩家状态
+    active: bool,
+}
+
+
+#[derive(BorshDeserialize, BorshSerialize)]
+pub struct Game {
+    game_id: u64,
+    // 当前对局卡牌库
+    deck: Deck,
+    // 弃牌堆
+    discard_pile: Vec<Card>,
+    // 游戏玩家列表
+    players: Vec<Player>,
+    //最终胜利者
+    winner: AccountId,
+    // 当前轮次玩家
+    current_player: AccountId,
+    // 当前轮次
+    turn_count: usize,
+    // 当前玩家需要摸的牌数
+    cards_to_draw: usize,
+    // 下一位玩家需要摸的牌数
+    next_player_cards_to_draw: usize,
 }
 
 
 #[derive(BorshDeserialize, BorshSerialize)]
 pub struct Card {
-    pub card_id: u64,
-    pub card_name: String,
-    pub card_description: String,
-    pub card_image: String,
-    pub card_type: String,
-    pub card_action: String,
-    pub card_status: CardStatus,
+    card_id: u64,
+    card_name: String,
+    card_description: String,
+    card_image: String,
+    card_type: String,
+    card_action: String,
+    card_status: CardStatus,
 }
+
 /// 卡片状态
 #[derive(BorshSerialize, BorshStorageKey, BorshDeserialize)]
 pub enum CardStatus {
@@ -58,8 +103,9 @@ pub enum StorageKey {
     Enumeration,
     TokenMetadata,
     NonFungibleToken,
-    // Secret,
     Card,
+    Game,
+    Player
 }
 
 #[near_bindgen]
@@ -69,6 +115,7 @@ impl Contract {
     pub fn init(owner_id: AccountId) -> Self {
         let mut contract = Self {
             owner_id: owner_id.clone(),
+            token_id: 0,
             tokens: NonFungibleToken::new(
                 StorageKey::NonFungibleToken,
                 owner_id,
@@ -76,9 +123,10 @@ impl Contract {
                 Some(StorageKey::Enumeration),
                 Some(StorageKey::Approval),
             ),
-            unique_id: 0,
             card_id: 1,
             cards: LookupMap::new(StorageKey::Card),
+            game_id:1,
+            games: LookupMap::new(StorageKey::Game),
         };
         return contract;
     }
@@ -145,11 +193,9 @@ impl Contract {
         &mut self,
         account_id: AccountId,
         metadata: TokenMetadata,
-        memo: Option<String>,
-        // secret: String,
+        memo: Option<String>
     ) {
-        let token_id = self.next_id().to_string();
-        // self.internal_mint(&account_id, &token_id, &metadata, memo, secret);
+        let token_id = self.next_token_id().to_string();
         self.internal_mint(&account_id, &token_id, &metadata, memo);
     }
 }
@@ -169,9 +215,9 @@ macro_rules! add_card {
     };
 }
 impl Contract {
-    pub(crate) fn next_id(&mut self) -> u64 {
-        self.unique_id += 1;
-        self.unique_id
+    pub(crate) fn next_token_id(&mut self) -> u64 {
+        self.token_id += 1;
+        self.token_id
     }
 
     fn init_card(&mut self) {
@@ -348,13 +394,10 @@ impl Contract {
         account_id: &AccountId,
         token_id: &TokenId,
         metadata: &TokenMetadata,
-        memo: Option<String>,
-        // secret: String,
+        memo: Option<String>
     ) {
         // 添加 token_id -> token_owner_id 映射
         self.tokens.owner_by_id.insert(token_id, account_id);
-        // 添加 secret
-        // self.set_account_description(token_id.clone(), secret);
         // 更新或添加 token_owner_id -> token_ids 映射
         if let Some(tokens_per_owner) = &mut self.tokens.tokens_per_owner {
             let mut token_ids = tokens_per_owner.get(account_id).unwrap_or_else(|| {
