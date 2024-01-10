@@ -4,6 +4,7 @@ use near_contract_standards::{
     impl_non_fungible_token_enumeration,
 };
 use near_sdk::collections::{LookupSet, UnorderedSet};
+use rand::seq::SliceRandom;
 use std::cmp::Ordering;
 
 use near_contract_standards::non_fungible_token::metadata::{
@@ -181,6 +182,13 @@ pub enum StorageKey {
     PlayerStatus,
     GameMode,
     MatchQueue,
+}
+macro_rules! extend_cards {
+    ($deck:expr, $card:expr, $count:expr) => {
+        for _ in 0..$count {
+            $deck.cards.push($card);
+        }
+    };
 }
 
 #[near_bindgen]
@@ -459,34 +467,59 @@ impl Contract {
         // 只处理玩家已经加入游戏的情况
         if let Some(&PlayerStatus::Ready(game_id)) = self.player_status.get(&player.clone()) {
             // 先处理所有的投票信息，这样才能知道怎么设置当前游戏的卡牌库是什么
-            let vote = self.vote_result(
-                self.games
-                    .get(&game_id)
-                    .expect(format!("Game {} does not exist.", game_id).as_str()),
-            );
+            let game = self
+                .games
+                .get(&game_id)
+                .expect(format!("Game {} does not exist.", game_id).as_str());
+            let vote = self.vote_result(game);
             // 通过投票结果设置游戏的卡牌库
             let vote_cards = self.cards_to_deck(
                 self.game_mode
                     .get(&vote)
                     .expect(format!("Game mode {} does not exist.", vote).as_str())
                     .clone(),
+                vec![],
             );
+            // 获取核心卡牌
+            let kernel_cards =
+                self.cards_to_deck(vec![0, 1], vec![game.players.len() - 1, game.players.len()]);
+
             // 修改游戏配置
             if let Some(game) = self.games.get_mut(&game_id) {
-                // 设置游戏的卡牌库
-                game.deck.cards = vote_cards;
-                // 设置游戏的当前玩家
-                game.current_player = game.players[0].name.to_string();
-                // 设置游戏的轮次
-                game.turn_count = 1;
-                // 设置游戏的当前玩家需要摸的牌数
-                game.cards_to_draw = 2;
-                // 设置游戏的下一位玩家需要摸的牌数
-                game.next_player_cards_to_draw = 0;
-                // 设置所有玩家状态切换至游戏中
-                for player in &mut game.players {
-                    self.player_status
-                        .insert(player.name.clone(), PlayerStatus::Playing(game_id));
+                // 设置游戏的牌堆
+                {
+                    // 设置游戏的卡牌库
+                    game.deck.cards = vote_cards;
+                    // 添加核心卡牌
+                    game.deck.cards.extend(kernel_cards);
+                    // 洗牌
+                    game.deck.shuffle_deck();
+                }
+
+                // 设置游戏
+                {
+                    // 设置游戏的当前玩家
+                    game.current_player = game.players[0].name.to_string();
+                    // 设置游戏的轮次
+                    game.turn_count = 1;
+                    // 设置游戏的当前玩家需要摸的牌数
+                    game.cards_to_draw = 2;
+                    // 设置游戏的下一位玩家需要摸的牌数
+                    game.next_player_cards_to_draw = 0;
+                }
+                // 设置玩家
+                {
+                    // 设置所有玩家状态切换至游戏中
+                    for player in &mut game.players {
+                        self.player_status
+                            .insert(player.name.clone(), PlayerStatus::Playing(game_id));
+                        player.hand.extend(
+                            (0..=1)
+                                .map(|_| game.deck.cards.pop().unwrap())
+                                .collect::<Vec<Card>>(),
+                        );
+                        player.hand.sort_by_key(|card| card.card_id);
+                    }
                 }
             }
         }
@@ -601,6 +634,15 @@ macro_rules! add_card {
         );
     };
 }
+
+impl Deck {
+    /// 洗牌
+    pub fn shuffle_deck(&mut self) {
+        let mut rng = rand::thread_rng();
+        self.cards.shuffle(&mut rng);
+    }
+}
+
 impl Contract {
     /// 获取游戏的投票游戏模式
     pub fn vote_result(&self, game: &Game) -> String {
@@ -628,31 +670,43 @@ impl Contract {
         return mode;
     }
     /// 设置卡片为牌堆中
-    pub fn cards_to_deck(&self, card_ids: Vec<u64>) -> Vec<Card> {
+    pub fn cards_to_deck(&self, card_ids: Vec<u64>, nums: Vec<usize>) -> Vec<Card> {
+        let mut card_nums = nums;
+        if card_nums.is_empty() {
+            card_nums = vec![1; card_ids.len()];
+        }
+        require!(
+            card_ids.len() == card_nums.len(),
+            "Card id and card num must be equal."
+        );
         card_ids
             .iter()
-            .map(|card_id| {
-                let card = self.cards.get(card_id).unwrap();
-                // 如果卡片已经在整个游戏中禁用，那么就抛出异常
-                if card.card_status == CardStatus::Disabled {
-                    env::panic_str(
-                        format!(
+            .zip(card_nums)
+            .flat_map(|(card_id, num)| {
+                self.cards.get(card_id).map(|card| {
+                    // 如果卡片已经在整个游戏中禁用，那么就抛出异常
+                    if card.card_status == CardStatus::Disabled {
+                        env::panic_str(&format!(
                             "The card {} has been disabled throughout the game",
                             card.card_name
-                        )
-                        .as_str(),
-                    );
-                }
-                Card {
-                    card_id: card.card_id,
-                    card_name: card.card_name.clone(),
-                    card_description: card.card_description.clone(),
-                    card_image: card.card_image.clone(),
-                    card_type: card.card_type.clone(),
-                    card_action: card.card_action.clone(),
-                    card_status: CardStatus::InDeck,
-                }
+                        ));
+                    }
+
+                    vec![
+                        Card {
+                            card_id: card.card_id,
+                            card_name: card.card_name.clone(),
+                            card_description: card.card_description.clone(),
+                            card_image: card.card_image.clone(),
+                            card_type: card.card_type.clone(),
+                            card_action: card.card_action.clone(),
+                            card_status: CardStatus::InDeck,
+                        };
+                        num
+                    ]
+                })
             })
+            .flatten()
             .collect()
     }
     /// 二分搜索
