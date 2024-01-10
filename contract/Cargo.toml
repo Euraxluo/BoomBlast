@@ -1,0 +1,22 @@
+[package]
+name = "contract"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-contract-standards = "4.1.1"
+near-sdk = "4.1.1"
+getrandom = { version = "0.2.11", features = ["js"] }
+rhai = { version = "1.16.3" }
+uint = "0.9.5"
+rand = "0.8.5"
+
+[patch.crates-io]
+parity-secp256k1 = {git = "https://github.com/paritytech/rust-secp256k1"}
+
+
+

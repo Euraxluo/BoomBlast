@@ -1,0 +1,29 @@
+[package]
+name = "examples"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[dev-dependencies]
+anyhow = "1.0"
+borsh = "1.2.0"
+maplit = "1.0"
+near-units = "0.2.0"
+near-gas = { version = "0.2.3", features = ["serde", "borsh", "schemars"] }
+near-jsonrpc-primitives = "0.17"
+near-primitives = "0.17"
+serde = "1.0"
+serde_with = "3.4"
+serde_json = { version = "1.0" }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3.5", features = ["env-filter"] }
+near-workspaces = "0.9.0"
+
+[patch.crates-io]
+parity-secp256k1 = {git = "https://github.com/paritytech/rust-secp256k1"}
+
+[[example]]
+name = "nft"
+path = "tests/nft.rs"
+
