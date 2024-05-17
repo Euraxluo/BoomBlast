@@ -5,6 +5,7 @@ use near_contract_standards::{
 };
 use near_sdk::collections::{LookupSet, UnorderedSet};
 use rand::seq::SliceRandom;
+use rhai::{Dynamic, Engine, EvalAltResult, FnPtr, FuncArgs, ImmutableString};
 use std::cmp::Ordering;
 
 use near_contract_standards::non_fungible_token::metadata::{
@@ -32,6 +33,8 @@ pub struct Contract {
     card_id: u64,
     // 存储所有的卡片
     cards: LookupMap<u64, Card>,
+    // 用于存储卡片id和卡片名称的映射
+    card_map: LookupMap<String, u64>,
     // 自增对局id
     game_id: u64,
     // 存储所有关联的游戏状态
@@ -91,6 +94,25 @@ pub struct Game {
     next_player_cards_to_draw: usize,
 }
 
+impl FuncArgs for Game {
+    fn parse<ARGS: Extend<Dynamic>>(self, args: &mut ARGS) {
+        // args.extend(Some(self.game_id.into()));
+        // args.extend(Some(self.deck.clone().into()));
+        args.extend(Some(self.discard_pile.clone().into()));
+        args.extend(Some(self.players.clone().into()));
+        args.extend(Some(self.winner.clone().into()));
+        args.extend(Some(self.current_player.clone().into()));
+        // args.extend(Some(self.turn_count.into()));
+        // args.extend(Some(self.cards_to_draw.into()));
+        // args.extend(Some(self.next_player_cards_to_draw.into()));
+    }
+}
+// impl FuncArgs for Deck {
+//     fn parse<ARGS: Extend<Dynamic>>(self, args: &mut ARGS) {
+//         args.extend(Some(self.num_of_players.into()));
+//         args.extend(Some(self.cards.into()));
+//     }
+// }
 // 卡牌信息
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Card {
@@ -110,6 +132,29 @@ pub struct Card {
     card_status: CardStatus,
 }
 
+impl Card {
+    fn action(&self, game: Game) -> Result<(), Box<EvalAltResult>> {
+        let mut engine = Engine::new();
+        // 注册 GameStruct 到 Rhai 的 Engine 中
+        engine.register_type::<Game>();
+
+        // 注册 GameStruct 的 new 方法
+        engine.register_fn("shuffle_deck", Game::shuffle_deck);
+        // This script creates a closure which captures a variable and returns it.
+        let card_action_ast = engine.compile(self.card_action.as_str())?;
+        let closure = engine.eval_ast::<FnPtr>(&card_action_ast)?;
+
+        // Create a closure by encapsulating the `Engine`, `AST` and `FnPtr`.
+        let action = move |g: Game| -> Result<(), Box<EvalAltResult>> {
+            closure.call(&engine, &card_action_ast, g)
+        };
+
+        // Execute the closure and handle any errors
+        action(game)?;
+
+        Ok(())
+    }
+}
 /// 卡片状态
 #[derive(
     BorshSerialize, BorshStorageKey, BorshDeserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord,
@@ -165,6 +210,7 @@ pub enum PlayerStatus {
     Playing(u64),
     // 加入游戏
     Joined(u64),
+    JoinedActive(u64),
     // 准备完成
     Ready(u64),
 }
@@ -176,6 +222,7 @@ pub enum StorageKey {
     TokenMetadata,
     NonFungibleToken,
     Card,
+    CardMap,
     Game,
     Player,
     AccountId,
@@ -208,6 +255,7 @@ impl Contract {
             ),
             card_id: 0,
             cards: LookupMap::new(StorageKey::Card),
+            card_map: LookupMap::new(StorageKey::CardMap),
             game_id: 0,
             games: LookupMap::new(StorageKey::Game),
             active_games: Vec::new(),
@@ -279,6 +327,13 @@ impl Contract {
         self.game_id
     }
 
+    /// 获取某个玩家状态
+    pub fn player_states(&self, player: &AccountId) -> PlayerStatus {
+        self.player_status
+            .get(player)
+            .expect("Player does not exist.")
+            .clone()
+    }
     /// TODO：加入别人创建的游戏大厅，需要使用凭证加入，并且这个凭证是由零知识证明生成的
     pub fn join_lobby(&mut self, game_certificate: u64, player: &AccountId) {}
 
@@ -438,6 +493,7 @@ impl Contract {
                                 game.players[_player_index].active = true;
                                 game.players[_player_index].mode_vote = game_mode;
                             }
+                            println!("ready game: {:?}", game);
                             // 改变当前玩家状态为准备完成
                             self.player_status
                                 .insert(player.clone(), PlayerStatus::Ready(game_id));
@@ -447,6 +503,7 @@ impl Contract {
                                 self.active_game();
                             }
                         }
+                        return game_id;
                     }
                 }
                 env::panic_str("Did not have any BoomBlastNFT.");
@@ -455,84 +512,49 @@ impl Contract {
         env::panic_str("Did not join any game.");
     }
 
-    // 设置所有没有设置好的内容
-    // 1. 设置游戏的卡牌库
-    // 4. 设置游戏的当前玩家
-    // 5. 设置游戏的轮次
-    // 6. 设置游戏的当前玩家需要摸的牌数
-    // 7. 设置游戏的下一位玩家需要摸的牌数
-    // 8. 设置所有玩家状态切换至游戏中
-    pub fn active_game(&mut self) {
+    pub fn play(&mut self, game_id: u64, card_id: u64) {
         let player = env::signer_account_id();
-        // 只处理玩家已经加入游戏的情况
-        if let Some(&PlayerStatus::Ready(game_id)) = self.player_status.get(&player.clone()) {
-            // 先处理所有的投票信息，这样才能知道怎么设置当前游戏的卡牌库是什么
-            let game = self
-                .games
-                .get(&game_id)
-                .expect(format!("Game {} does not exist.", game_id).as_str());
-            let vote = self.vote_result(game);
-            // 通过投票结果设置游戏的卡牌库
-            let vote_cards = self.cards_to_deck(
-                self.game_mode
-                    .get(&vote)
-                    .expect(format!("Game mode {} does not exist.", vote).as_str())
-                    .clone(),
-                vec![],
-            );
-            // 获取核心卡牌
-            let kernel_cards =
-                self.cards_to_deck(vec![0, 1], vec![game.players.len() - 1, game.players.len()]);
+        // 确保当前玩家还处于游戏中状态
+        require!(
+            self.player_status.get(&player).unwrap() == &PlayerStatus::Playing(game_id),
+            "You are not in the game."
+        );
+        let mut game = self
+            .games
+            .get_mut(&game_id)
+            .expect(format!("Game {} does not exist.", game_id).as_str());
+        // 确保当前游戏轮到当前玩家出牌
+        require!(
+            game.current_player == player.to_string(),
+            "It's not your turn."
+        );
+        // 确保当前玩家在游戏里面还活着
+        require!(
+            game.players
+                .iter()
+                .find(|p| p.name == player)
+                .unwrap()
+                .active,
+            "You are dead."
+        );
+        // 获取当前打出的卡牌
+        let played_card = game
+            .players
+            .iter()
+            .find(|p| p.name == player)
+            .unwrap()
+            .hand
+            .iter()
+            .find(|card| card.card_id == card_id)
+            .unwrap();
 
-            // 修改游戏配置
-            if let Some(game) = self.games.get_mut(&game_id) {
-                // 设置游戏的牌堆
-                {
-                    // 设置游戏的卡牌库
-                    game.deck.cards = vote_cards;
-                    // 添加核心卡牌
-                    game.deck.cards.extend(kernel_cards);
-                    // 洗牌
-                    game.deck.shuffle_deck();
-                }
+        // 更新游戏的弃牌堆
+        game.discard_pile.push(played_card.clone());
 
-                // 设置游戏
-                {
-                    // 设置游戏的当前玩家
-                    game.current_player = game.players[0].name.to_string();
-                    // 设置游戏的轮次
-                    game.turn_count = 1;
-                    // 设置游戏的当前玩家需要摸的牌数
-                    game.cards_to_draw = 2;
-                    // 设置游戏的下一位玩家需要摸的牌数
-                    game.next_player_cards_to_draw = 0;
-                }
-                // 设置玩家
-                {
-                    // 设置所有玩家状态切换至游戏中
-                    for player in &mut game.players {
-                        self.player_status
-                            .insert(player.name.clone(), PlayerStatus::Playing(game_id));
-                        player.hand.extend(
-                            (0..=1)
-                                .map(|_| game.deck.cards.pop().unwrap())
-                                .collect::<Vec<Card>>(),
-                        );
-                        player.hand.sort_by_key(|card| card.card_id);
-                    }
-                }
-            }
-        }
+        let new_game = game.clone();
+        // 执行卡牌的行为
+        played_card.action(new_game);
     }
-
-    // pub fn play(&mut self, game_id: u64, card_id: u64) {
-    //     let game = self.games.get(&game_id).unwrap();
-    //     let card = self.cards.get(&card_id).unwrap();
-    //     let player = game.players.iter().find(|player| player.name == game.current_player).unwrap();
-    //     let played_card = player.hand.iter().find(|card| card.card_id == card_id).unwrap();
-    //     self.update_discard_pile(played_card.clone());
-    //     played_card.action(game);
-    // }
 
     // 只有合约所有者可以禁用卡片类型
     pub fn disable_card(&mut self, card_id: u64) {
@@ -634,7 +656,12 @@ macro_rules! add_card {
         );
     };
 }
-
+impl Game {
+    // 洗牌
+    pub fn shuffle_deck(&mut self) {
+        self.deck.shuffle_deck();
+    }
+}
 impl Deck {
     /// 洗牌
     pub fn shuffle_deck(&mut self) {
@@ -644,6 +671,84 @@ impl Deck {
 }
 
 impl Contract {
+    // 设置所有没有设置好的内容
+    // 1. 设置游戏的卡牌库
+    // 4. 设置游戏的当前玩家
+    // 5. 设置游戏的轮次
+    // 6. 设置游戏的当前玩家需要摸的牌数
+    // 7. 设置游戏的下一位玩家需要摸的牌数
+    // 8. 设置所有玩家状态切换至游戏中
+    pub fn active_game(&mut self) {
+        let player = env::signer_account_id();
+        // 只处理玩家已经加入游戏的情况
+        if let Some(&PlayerStatus::Ready(game_id)) = self.player_status.get(&player.clone()) {
+            // 先处理所有的投票信息，这样才能知道怎么设置当前游戏的卡牌库是什么
+            let game = self
+                .games
+                .get(&game_id)
+                .expect(format!("Game {} does not exist.", game_id).as_str());
+            let vote = self.vote_result(game);
+            // 通过投票结果设置游戏的卡牌库
+            let vote_cards = self.cards_to_deck(
+                self.game_mode
+                    .get(&vote)
+                    .expect(format!("Game mode {} does not exist.", vote).as_str())
+                    .clone(),
+                vec![],
+            );
+
+            // 获取核心卡牌
+            let kernel_cards = self.cards_to_deck(
+                vec![
+                    self.get_card_id("ExplodingKitten".to_string()),
+                    self.get_card_id("Defuse".to_string()),
+                ],
+                vec![game.players.len() - 1, game.players.len()],
+            );
+
+            println!("kernel_cards: {:?}", kernel_cards);
+            // 修改游戏配置
+            if let Some(game) = self.games.get_mut(&game_id) {
+                // 设置游戏的牌堆
+                {
+                    // 设置游戏的卡牌库
+                    game.deck.cards = vote_cards;
+                    // 添加核心卡牌
+                    game.deck.cards.extend(kernel_cards);
+                    // 洗牌
+                    game.deck.shuffle_deck();
+                }
+
+                // 设置游戏
+                {
+                    // 设置游戏的当前玩家
+                    game.current_player = game.players[0].name.to_string();
+                    // 设置游戏的轮次
+                    game.turn_count = 1;
+                    // 设置游戏的当前玩家需要摸的牌数
+                    game.cards_to_draw = 2;
+                    // 设置游戏的下一位玩家需要摸的牌数
+                    game.next_player_cards_to_draw = 0;
+                }
+                // 设置玩家
+                {
+                    // 设置所有玩家状态切换至游戏中
+                    for player in &mut game.players {
+                        self.player_status
+                            .insert(player.name.clone(), PlayerStatus::Playing(game_id));
+                        println!("deck cards: {:?}", game.deck.cards.len());
+                        player.hand.extend(
+                            (0..=1)
+                                .map(|_| game.deck.cards.pop().unwrap())
+                                .collect::<Vec<Card>>(),
+                        );
+                        player.hand.sort_by_key(|card| card.card_id);
+                    }
+                }
+            }
+        }
+    }
+
     /// 获取游戏的投票游戏模式
     pub fn vote_result(&self, game: &Game) -> String {
         // 模式投票数量必须大于0
@@ -910,7 +1015,12 @@ impl Contract {
             "
         );
     }
-
+    pub(crate) fn get_card_id(&self, card_name: String) -> u64 {
+        self.card_map
+            .get(&card_name)
+            .expect("Card does not exist.")
+            .clone()
+    }
     // 只有合约所有者可以新增卡片类型
     pub(crate) fn internal_add_card(
         &mut self,
@@ -923,7 +1033,7 @@ impl Contract {
         self.card_id += 1;
         let card = Card {
             card_id: self.card_id,
-            card_name,
+            card_name: card_name.clone(),
             card_description,
             card_image,
             card_type,
@@ -931,6 +1041,7 @@ impl Contract {
             card_status: CardStatus::Available,
         };
         self.cards.insert(self.card_id, card);
+        self.card_map.insert(card_name, self.card_id);
         self.card_id
     }
 

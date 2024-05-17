@@ -366,6 +366,8 @@ mod rhai_test {
 
 #[cfg(test)]
 mod game_test {
+    use std::fmt::format;
+
     use near_contract_standards::non_fungible_token::approval::NonFungibleTokenApproval;
 
     use near_contract_standards::non_fungible_token::core::NonFungibleTokenCore;
@@ -390,6 +392,24 @@ mod game_test {
     fn bob() -> AccountId {
         "bob.near".parse().unwrap()
     }
+
+    fn token(user: String, card: u64) -> TokenMetadata {
+        TokenMetadata {
+            title: Some(format!("NFT #{}", user)),
+            description: None,
+            media: Some(format!("http://images.com/{}", card)),
+            media_hash: None,
+            copies: None,
+            issued_at: None,
+            expires_at: None,
+            starts_at: None,
+            updated_at: None,
+            extra: Some(format!("{}", card)),
+            reference: None,
+            reference_hash: None,
+        }
+    }
+
     /// 测试游戏创建
     #[test]
     fn test_create_game() {
@@ -496,8 +516,172 @@ mod game_test {
         let game_value2 = contract.get_game(game_1);
         println!("game_value2: {:?}", game_value2);
     }
-}
 
+    /// 测试添加卡片和添加游戏模式
+    #[test]
+    fn test_add_card_and_add_game_mode() {
+        let mut contract = Contract::init(owner());
+
+        testing_env!(VMContextBuilder::new()
+            .predecessor_account_id(owner())
+            .build());
+
+        let game_mode_id = "game_mode_1".to_string();
+        let game_mode_card = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        contract.add_game_mode(game_mode_id.clone(), game_mode_card.clone());
+        println!("game_mode_id: {:?}", game_mode_id);
+        let game_mode = contract.get_game_mode(game_mode_id);
+        println!("game_mode: {:?}", game_mode);
+        assert_eq!(game_mode, game_mode_card);
+
+        let card_id = contract.add_card(
+            "card_name".to_string(),
+            "card_des".to_string(),
+            "card_img".to_string(),
+            "card_type  ".to_string(),
+            "card_type".to_string(),
+        );
+        println!("card_id: {:?}", card_id);
+        let card = contract.get_card(card_id);
+        println!("card: {:?}", card);
+    }
+
+    /// 测试多个玩家加入游戏后，完成游戏设置后，开始游戏
+    #[test]
+    fn test_start_game() {
+        let mut contract = Contract::init(owner());
+
+        println!("--------------------------------- 两个玩家分别进行匹配 ---------------------------------------");
+        testing_env!(VMContextBuilder::new()
+            .predecessor_account_id(owner())
+            .signer_account_id(bob())
+            .build());
+        let game_1 = contract.join_game();
+        let game_value1 = contract.get_game(game_1);
+        println!("game_1: {:?}", game_1);
+        println!("game_value1: {:?}", game_value1);
+        testing_env!(VMContextBuilder::new()
+            .predecessor_account_id(owner())
+            .signer_account_id(alice())
+            .build());
+        let game_2 = contract.join_game();
+        let game_2 = contract.join_game();
+        let game_2 = contract.join_game();
+        let game_2 = contract.join_game();
+        let game_2 = contract.join_game();
+        let game_value2 = contract.get_game(game_2);
+        println!("game_2: {:?}", game_2);
+        println!("game_value2: {:?}", game_value2);
+        assert_eq!(game_1, game_2);
+
+        println!(
+            "--------------------------------- 离开游戏 ---------------------------------------"
+        );
+        testing_env!(VMContextBuilder::new()
+            .predecessor_account_id(owner())
+            .signer_account_id(bob())
+            .build());
+        contract.leave_game();
+        contract.leave_game();
+        contract.leave_game();
+        contract.leave_game();
+        let game_value1 = contract.get_game(game_1);
+        println!("game_value1: {:?}", game_value1);
+
+        testing_env!(VMContextBuilder::new()
+            .predecessor_account_id(owner())
+            .signer_account_id(alice())
+            .build());
+        contract.leave_game();
+
+        let game_value2 = contract.get_game(game_1);
+        println!("game_value2: {:?}", game_value2);
+    }
+
+    /// 测试多个玩家加入游戏后，开始游戏玩耍
+    #[test]
+    fn test_play_game() {
+        let mut contract: Contract = Contract::init(owner());
+
+        println!("--------------------------------- 两个玩家分别mint自己的卡牌并进行匹配 ---------------------------------------");
+        testing_env!(VMContextBuilder::new()
+            .predecessor_account_id(owner())
+            .signer_account_id(bob())
+            .build());
+
+        println!("--------------------------------- 玩家 bob 操作 ---------------------------------------");
+        for _ in 0..3 {
+            contract.mint(
+                bob(),
+                token(
+                    bob().to_string(),
+                    contract.get_card_id("Shuffle".to_string()),
+                ),
+                Some("bob mint".to_string()),
+            );
+        }
+
+        // 获取用户的所有token
+        let tokens_1 = contract.nft_tokens_for_owner(bob(), None, None);
+        println!("tokens: {:?}", tokens_1);
+        let game_1 = contract.join_game();
+        let game_value1 = contract.get_game(game_1);
+        println!("game: {:?}", game_1);
+        println!("game_value: {:?}", game_value1);
+
+        println!("--------------------------------- 玩家alice操作 ---------------------------------------");
+        testing_env!(VMContextBuilder::new()
+            .predecessor_account_id(owner())
+            .signer_account_id(alice())
+            .build());
+
+        for _ in 0..3 {
+            contract.mint(
+                alice(),
+                token(
+                    alice().to_string(),
+                    contract.get_card_id("Shuffle".to_string()),
+                ),
+                Some("alice mint".to_string()),
+            );
+        }
+
+        // 获取用户的所有token
+        let tokens_2 = contract.nft_tokens_for_owner(alice(), None, None);
+        println!("tokens: {:?}", tokens_2);
+        let game_2 = contract.join_game();
+        let game_value2 = contract.get_game(game_2);
+        println!("game: {:?}", game_2);
+        println!("game_value: {:?}", game_value2);
+        assert_eq!(game_1, game_2);
+
+        println!("--------------------------------- 配置     游戏 ---------------------------------------");
+
+        println!("--------------------------------- 玩家 bob 操作 ---------------------------------------");
+        testing_env!(VMContextBuilder::new()
+            .predecessor_account_id(owner())
+            .signer_account_id(bob())
+            .build());
+        contract.prepare_game(
+            tokens_1.into_iter().map(|x| x.token_id).collect(),
+            "basic".to_string(),
+        );
+        // 打印玩家状态
+        println!("--------------------------------- 玩家alice操作 ---------------------------------------");
+        testing_env!(VMContextBuilder::new()
+            .predecessor_account_id(alice())
+            .signer_account_id(alice())
+            .build());
+        contract.prepare_game(
+            tokens_2.into_iter().map(|x| x.token_id).collect(),
+            "basic".to_string(),
+        );
+
+        println!("--------------------------------- 玩家     状态 ---------------------------------------");
+        println!("status {:?}", contract.player_states(&alice()));
+        println!("status {:?}", contract.player_states(&alice()));
+    }
+}
 #[cfg(test)]
 mod test_some_code {
 

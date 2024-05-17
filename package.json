@@ -5,12 +5,18 @@
     "scripts": {
         "build:contract": "cd contract && rustup target add wasm32-unknown-unknown && cargo build --target wasm32-unknown-unknown --release",
         "test:contract": "cd contract && cargo test",
-        "deploy:contract": "near contract deploy euraxluo_hello_near_code.testnet use-file contract/target/wasm32-unknown-unknown/release/contract.wasm with-init-call init json-args '{\"owner_id\":\"euraxluo.testnet\"}' prepaid-gas '100.000 TeraGas' attached-deposit '0 NEAR' network-config testnet sign-with-keychain send",    
+        "deploy:contract": "near contract deploy euraxluo_hello_near_code.testnet use-file contract/target/wasm32-unknown-unknown/release/contract.wasm with-init-call init json-args '{\"owner_id\":\"euraxluo.testnet\"}' prepaid-gas '100.000 TeraGas' attached-deposit '0 NEAR' network-config testnet sign-with-keychain send",
         "test:integration": "npm run build:contract && cargo run --example contract"
     },
     "devDependencies": {
-        "near-api-js": "^0.44.2",
+        "near-api-js": "^2.1.4",
         "near-cli": "^3.3.0"
     },
-    "dependencies": {}
+    "dependencies": {
+        "@near-wallet-selector/core": "^8.9.7",
+        "@near-wallet-selector/here-wallet": "^8.9.7",
+        "@near-wallet-selector/modal-ui": "^8.9.7",
+        "@near-wallet-selector/my-near-wallet": "^8.9.7",
+        "pnpm": "^9.1.0"
+    }
 }

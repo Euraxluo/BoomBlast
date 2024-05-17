@@ -55,7 +55,7 @@
 //             while !end_turn {
 //                 if let Some(played_card) = self.current_player.choose_card_to_play() {
 //                     println!(
-//                         "Player {} plays {}",
+//                         "Player {} plays {}",    
 //                         self.current_player,
 //                         played_card.to_string()
 //                     );
